@@ -57,6 +57,27 @@ def save_split_images(images, split_name):
         shutil.copy(image["filepath"], f"{split_name}/{str(image['_id'])}.png")
 
 
+def extract_polygons(json_data, dataset):
+    # Navigate to consensus_label -> instances
+    instances = (
+        json_data.get("consensus_label", {}).get(f"{dataset}", {}).get("instances", {})
+    )
+
+    # Dictionary to store polygons
+    extracted_polygons = {}
+
+    # Iterate over each category
+    for category, items in instances.items():
+        for item in items:
+            polygons = item.get("polygons")
+            if polygons:
+                if category not in extracted_polygons:
+                    extracted_polygons[category] = []
+                extracted_polygons[category].extend(polygons)
+
+    return extracted_polygons
+
+
 def extract_date_from_filename(filename):
     """
     Extract the year, month, and day from a filename with the format YYYY-MM-DD-HH-MM-SS.mmmmmm.png.
@@ -112,15 +133,20 @@ def create_coco_dataset(
     # Filter ground_truth_labels collection by dataset name
     ground_truth_labels = client.collection("ground_truth_labels")
     images_collection = client.collection("images")
+    instance_seg_labels = client.collection("instance_segmentation_labels")
 
     labels = list(ground_truth_labels.find({"dataset": dataset_name}))
+    image_ids = set([label["image_id"] for label in labels])
+
     segmentations = list(
-        ground_truth_labels.find(
-            {"dataset": segmentation_dataset_name, "polygons": {"$exists": True}}
-        )
+        instance_seg_labels.find({"image_object_id": {"$in": list(image_ids)}})
     )
 
-    image_ids = set([label["image_id"] for label in labels])
+    segmentations = {
+        segmentation["image_object_id"]: segmentation
+        for segmentation in segmentations
+        if extract_polygons(segmentation, segmentation_dataset_name)
+    }
 
     # Get image information from the images collection
     images = list(
@@ -218,6 +244,7 @@ def create_coco_dataset(
     for label in tqdm(labels):
         image_id = str(label["image_id"])
         classes = label["classes"]
+        segmentation = segmentations.get(label["image_id"], {})
 
         # iterate through each class and add the bounding box annotation
         for class_label in classes:
@@ -241,10 +268,14 @@ def create_coco_dataset(
                 }
                 # Search for matching polygon for the segmentation
                 matched_segmentation = None
+                max_iou = 0
                 ious = []
-                for segmentation in segmentations:
-                    if segmentation["image_id"] == label["image_id"]:
-                        for polygon in segmentation["polygons"]:
+                if segmentation:
+                    extracted = extract_polygons(
+                        segmentation, segmentation_dataset_name
+                    )
+                    for name, polygons in extracted.items():
+                        for polygon in polygons:
                             # Calculate IoU to match polygon with the bounding box
                             iou = calculate_iou(
                                 polygon,
@@ -257,11 +288,12 @@ def create_coco_dataset(
                             )
                             ious.append(iou)
 
-                        # Get the polygon with the highest IoU above the threshold
-                        if max(ious) >= iou_threshold:
-                            matched_segmentation = segmentation["polygons"][
-                                ious.index(max(ious))
-                            ]
+                        # Update the matched segmentation if the IoU is the highest so far
+                        if iou > max_iou and iou >= iou_threshold:
+                            max_iou = iou
+                            matched_segmentation = (
+                                polygon  # Store the polygon with the highest IoU
+                            )
 
                 # If a matching segmentation was found, add it to the annotation
                 if matched_segmentation:
@@ -331,13 +363,59 @@ def create_coco_dataset(
         ]
         val_images = [image for image in images if str(image["_id"]) in val_image_ids]
 
-        save_split_images(train_images, f"{dataset_name}/images/train")
-        save_split_images(val_images, f"{dataset_name}/images/val")
+        # save_split_images(train_images, f"{dataset_name}/images/train")
+        # save_split_images(val_images, f"{dataset_name}/images/val")
 
-        save_split_to_txts(
-            train_images, f"{dataset_name}/labels/train", annotations_map
-        )
-        save_split_to_txts(val_images, f"{dataset_name}/labels/val", annotations_map)
+        # save_split_to_txts(
+        #     train_images, f"{dataset_name}/labels/train", annotations_map
+        # )
+        # save_split_to_txts(val_images, f"{dataset_name}/labels/val", annotations_map)
+
+        # Filter images for train and validation sets
+        train_images = [
+            image for image in coco_dataset["images"] if image["id"] in train_image_ids
+        ]
+        val_images = [
+            image for image in coco_dataset["images"] if image["id"] in val_image_ids
+        ]
+
+        # Filter annotations for train and validation sets
+        train_annotations = [
+            annotation
+            for annotation in coco_dataset["annotations"]
+            if annotation["image_id"] in train_image_ids
+        ]
+        val_annotations = [
+            annotation
+            for annotation in coco_dataset["annotations"]
+            if annotation["image_id"] in val_image_ids
+        ]
+
+        # Create train and validation COCO datasets
+        train_coco_dataset = {
+            "info": coco_dataset.get("info", {}),
+            "licenses": coco_dataset.get("licenses", []),
+            "categories": coco_dataset["categories"],
+            "images": train_images,
+            "annotations": train_annotations,
+        }
+
+        val_coco_dataset = {
+            "info": coco_dataset.get("info", {}),
+            "licenses": coco_dataset.get("licenses", []),
+            "categories": coco_dataset["categories"],
+            "images": val_images,
+            "annotations": val_annotations,
+        }
+
+        # Save the train and validation COCO JSON files
+        with open(f"instances_train_coco.json", "w") as train_file:
+            json.dump(train_coco_dataset, train_file, indent=4)
+
+        with open(f"instances_val_coco.json", "w") as val_file:
+            json.dump(val_coco_dataset, val_file, indent=4)
+
+        print("Train and validation COCO datasets created successfully.")
 
 
 # filter:
@@ -351,7 +429,7 @@ create_coco_dataset(
     database_name="pipeline",
     dataset_name="fm_boxes_blueberries",
     segmentation_dataset_name="fm_segmentation_blueberries",
-    iou_threshold=0.9,
+    iou_threshold=0.5,
     img_size=(2048, 2448),
     drop_classes=["maybe_fm", "hand_sleeve"],
 )

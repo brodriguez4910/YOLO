@@ -1,6 +1,10 @@
 import sys
 from pathlib import Path
 
+import torch
+
+torch.set_float32_matmul_precision("medium")
+
 import hydra
 from lightning import Trainer
 

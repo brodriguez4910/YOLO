@@ -1,4 +1,4 @@
-path: datasets/fm_boxes_blueberries_full_no_throwout # dataset root dir
+path: datasets/fm_boxes_blueberries # dataset root dir
 train: train # train images (relative to 'path') 118287 images
 validation: val # val images (relative to 'path') 5000 images
 # test: images/test # test images (relative to 'path') 5000 images

@@ -28,7 +28,7 @@ optimizer:
 
 loss:
   objective:
-    BCELoss: 0.5
+    BCELoss: 1.5
     BoxLoss: 7.5
     DFLoss: 1.5
   aux:

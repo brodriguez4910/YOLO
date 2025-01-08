@@ -16,7 +16,9 @@ from yolo.utils.model_utils import PostProcess, create_optimizer, create_schedul
 class BaseModel(LightningModule):
     def __init__(self, cfg: Config):
         super().__init__()
-        self.model = create_model(cfg.model, class_num=cfg.dataset.class_num, weight_path=cfg.weight)
+        self.model = create_model(
+            cfg.model, class_num=cfg.dataset.class_num, weight_path=cfg.weight
+        )
 
     def forward(self, x):
         return self.model(x)
@@ -32,12 +34,18 @@ class ValidateModel(BaseModel):
             self.validation_cfg = self.cfg.task.validation
         self.metric = MeanAveragePrecision(iou_type="bbox", box_format="xyxy")
         self.metric.warn_on_many_detections = False
-        self.val_loader = create_dataloader(self.validation_cfg.data, self.cfg.dataset, self.validation_cfg.task)
+        self.val_loader = create_dataloader(
+            self.validation_cfg.data, self.cfg.dataset, self.validation_cfg.task
+        )
         self.ema = self.model
 
     def setup(self, stage):
         self.vec2box = create_converter(
-            self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device
+            self.cfg.model.name,
+            self.model,
+            self.cfg.model.anchor,
+            self.cfg.image_size,
+            self.device,
         )
         self.post_process = PostProcess(self.vec2box, self.validation_cfg.nms)
 
@@ -49,7 +57,8 @@ class ValidateModel(BaseModel):
         H, W = images.shape[2:]
         predicts = self.post_process(self.ema(images), image_size=[W, H])
         batch_metrics = self.metric(
-            [to_metrics_format(predict) for predict in predicts], [to_metrics_format(target) for target in targets]
+            [to_metrics_format(predict) for predict in predicts],
+            [to_metrics_format(target) for target in targets],
         )
 
         self.log_dict(
@@ -66,7 +75,10 @@ class ValidateModel(BaseModel):
         del epoch_metrics["classes"]
         self.log_dict(epoch_metrics, prog_bar=True, sync_dist=True, rank_zero_only=True)
         self.log_dict(
-            {"PyCOCO/AP @ .5:.95": epoch_metrics["map"], "PyCOCO/AP @ .5": epoch_metrics["map_50"]},
+            {
+                "PyCOCO/AP @ .5:.95": epoch_metrics["map"],
+                "PyCOCO/AP @ .5": epoch_metrics["map_50"],
+            },
             sync_dist=True,
             rank_zero_only=True,
         )
@@ -77,7 +89,9 @@ class TrainModel(ValidateModel):
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         self.cfg = cfg
-        self.train_loader = create_dataloader(self.cfg.task.data, self.cfg.dataset, self.cfg.task.task)
+        self.train_loader = create_dataloader(
+            self.cfg.task.data, self.cfg.dataset, self.cfg.task.task
+        )
 
     def setup(self, stage):
         super().setup(stage)
@@ -106,7 +120,13 @@ class TrainModel(ValidateModel):
             batch_size=batch_size,
             rank_zero_only=True,
         )
-        self.log_dict(lr_dict, prog_bar=False, logger=True, on_epoch=False, rank_zero_only=True)
+        self.log_dict(
+            lr_dict,
+            prog_bar=False,
+            logger=True,
+            on_epoch=False,
+            rank_zero_only=True,
+        )
         return loss * batch_size
 
     def configure_optimizers(self):
@@ -120,11 +140,17 @@ class InferenceModel(BaseModel):
         super().__init__(cfg)
         self.cfg = cfg
         # TODO: Add FastModel
-        self.predict_loader = create_dataloader(cfg.task.data, cfg.dataset, cfg.task.task)
+        self.predict_loader = create_dataloader(
+            cfg.task.data, cfg.dataset, cfg.task.task
+        )
 
     def setup(self, stage):
         self.vec2box = create_converter(
-            self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device
+            self.cfg.model.name,
+            self.model,
+            self.cfg.model.anchor,
+            self.cfg.image_size,
+            self.device,
         )
         self.post_process = PostProcess(self.vec2box, self.cfg.task.nms)
 
@@ -144,6 +170,8 @@ class InferenceModel(BaseModel):
         return img, fps
 
     def _save_image(self, img, batch_idx):
-        save_image_path = Path(self.trainer.default_root_dir) / f"frame{batch_idx:03d}.png"
+        save_image_path = (
+            Path(self.trainer.default_root_dir) / f"frame{batch_idx:03d}.png"
+        )
         img.save(save_image_path)
         print(f"💾 Saved visualize image at {save_image_path}")

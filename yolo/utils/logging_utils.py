@@ -293,7 +293,7 @@ def setup(cfg: Config):
     progress.append(YOLORichProgressBar())
     progress.append(YOLORichModelSummary())
     progress.append(ImageLogger())
-    if cfg.use_tensorboard:
+    if cfg.use_tensorboard and getattr(rank_zero_only, "rank", None) == 0:
         loggers.append(TensorBoardLogger(log_graph="all", save_dir=save_path))
     if cfg.use_wandb:
         loggers.append(
@@ -347,7 +347,7 @@ def validate_log_directory(cfg: Config, exp_name: str) -> Path:
             save_path = base_path / exp_name
             index += 1
         if index > 1:
-            logger.opt(colors=True).warning(
+            logger.warning(
                 f"🔀 Experiment directory exists! Changed <red>{old_exp_name}</> to <green>{exp_name}</>"
             )
 
@@ -355,6 +355,7 @@ def validate_log_directory(cfg: Config, exp_name: str) -> Path:
     if not getattr(cfg, "quite", False):
         logger.info(f"📄 Created log folder: [blue b u]{save_path}[/]")
     logger.addHandler(FileHandler(save_path / "output.log"))
+
     return save_path
 
 
