@@ -3,6 +3,7 @@ from queue import Empty, Queue
 from statistics import mean
 from threading import Event, Thread
 from typing import Generator, List, Tuple, Union
+from itertools import chain
 
 import numpy as np
 import torch
@@ -25,18 +26,27 @@ from yolo.utils.logger import logger
 
 
 class YoloDataset(Dataset):
-    def __init__(self, data_cfg: DataConfig, dataset_cfg: DatasetConfig, phase: str = "train2017"):
+    def __init__(
+        self, data_cfg: DataConfig, dataset_cfg: DatasetConfig, phase: str = "train2017"
+    ):
         augment_cfg = data_cfg.data_augment
         self.image_size = data_cfg.image_size
         phase_name = dataset_cfg.get(phase, phase)
         self.batch_size = data_cfg.batch_size
         self.dynamic_shape = getattr(data_cfg, "dynamic_shape", False)
         self.base_size = mean(self.image_size)
+        self.invalid_train_labels = 0
+        self.invalid_val_labels = 0
+        self.phase_name = None
 
         transforms = [eval(aug)(prob) for aug, prob in augment_cfg.items()]
-        self.transform = AugmentationComposer(transforms, self.image_size, self.base_size)
+        self.transform = AugmentationComposer(
+            transforms, self.image_size, self.base_size
+        )
         self.transform.get_more_data = self.get_more_data
-        self.img_paths, self.bboxes, self.ratios = tensorlize(self.load_data(Path(dataset_cfg.path), phase_name))
+        self.img_paths, self.bboxes, self.ratios = tensorlize(
+            self.load_data(Path(dataset_cfg.path), phase_name)
+        )
 
     def load_data(self, dataset_path: Path, phase_name: str):
         """
@@ -68,7 +78,9 @@ class YoloDataset(Dataset):
             logger.info(f":package: Loaded {phase_name} cache")
         return data
 
-    def filter_data(self, dataset_path: Path, phase_name: str, sort_image: bool = False) -> list:
+    def filter_data(
+        self, dataset_path: Path, phase_name: str, sort_image: bool = False
+    ) -> list:
         """
         Filters and collects dataset information by pairing images with their corresponding labels.
 
@@ -80,9 +92,13 @@ class YoloDataset(Dataset):
         Returns:
             list: A list of tuples, each containing the path to an image file and its associated segmentation as a tensor.
         """
+        self.phase_name = phase_name
+
         images_path = dataset_path / "images" / phase_name
         labels_path, data_type = locate_label_paths(dataset_path, phase_name)
-        images_list = sorted([p.name for p in Path(images_path).iterdir() if p.is_file()])
+        images_list = sorted(
+            [p.name for p in Path(images_path).iterdir() if p.is_file()]
+        )
         if data_type == "json":
             annotations_index, image_info_dict = create_image_metadata(labels_path)
 
@@ -98,19 +114,56 @@ class YoloDataset(Dataset):
                 if image_info is None:
                     continue
                 annotations = annotations_index.get(image_info["id"], [])
+                image_seg_annotations = [
+                    [annotation["category_id"]] + list(annotation["bbox"])
+                    for annotation in annotations
+                ]
                 image_seg_annotations = scale_segmentation(annotations, image_info)
             elif data_type == "txt":
                 label_path = labels_path / f"{image_id}.txt"
                 if not label_path.is_file():
                     continue
                 with open(label_path, "r") as file:
-                    image_seg_annotations = [list(map(float, line.strip().split())) for line in file]
+                    image_seg_annotations = [
+                        list(map(float, line.strip().split())) for line in file
+                    ]
             else:
                 image_seg_annotations = []
 
             labels = self.load_valid_labels(image_id, image_seg_annotations)
-
             img_path = images_path / image_name
+
+            # from torchvision.io import read_image, write_png
+            # from torchvision.utils import draw_bounding_boxes
+            # from torchvision.transforms.functional import convert_image_dtype
+
+            # # Load the image
+            # image = read_image(img_path)
+            # image = convert_image_dtype(
+            #     image, dtype=torch.float32
+            # )  # Normalize image to [0, 1]
+
+            # # Define normalized bounding boxes (x_min, y_min, x_max, y_max in [0, 1])
+            # # Example: Two bounding boxes
+            # normalized_boxes = labels[:, 1:]
+
+            # # Convert normalized bounding boxes to absolute pixel coordinates
+            # image_height, image_width = image.shape[1:]
+            # absolute_boxes = normalized_boxes.clone()
+            # absolute_boxes[:, [0, 2]] *= image_width  # Scale x-coordinates
+            # absolute_boxes[:, [1, 3]] *= image_height  # Scale y-coordinates
+
+            # # Draw bounding boxes on the image
+            # image_with_boxes = draw_bounding_boxes(
+            #     (image * 255).to(
+            #         torch.uint8
+            #     ),  # Convert back to uint8 for visualization
+            #     absolute_boxes,
+            #     width=3,
+            # )
+
+            # write_png(image_with_boxes, "test.png")
+
             if sort_image:
                 with Image.open(img_path) as img:
                     width, height = img.size
@@ -121,10 +174,21 @@ class YoloDataset(Dataset):
 
         data = sorted(data, key=lambda x: x[2], reverse=True)
 
+        logger.info(
+            f"Invalid {phase_name} labels: "
+            + str(
+                self.invalid_train_labels
+                if self.phase_name == "train"
+                else self.invalid_val_labels
+            )
+        )
         logger.info(f"Recorded {valid_inputs}/{len(images_list)} valid inputs")
+
         return data
 
-    def load_valid_labels(self, label_path: str, seg_data_one_img: list) -> Union[Tensor, None]:
+    def load_valid_labels(
+        self, label_path: str, seg_data_one_img: list
+    ) -> Union[Tensor, None]:
         """
         Loads and validates bounding box data is [0, 1] from a label file.
 
@@ -137,16 +201,30 @@ class YoloDataset(Dataset):
         bboxes = []
         for seg_data in seg_data_one_img:
             cls = seg_data[0]
-            points = np.array(seg_data[1:]).reshape(-1, 2)
+            # points = np.array(seg_data[1:]).reshape(-1, 2) # original
+
+            x, y, w, h = seg_data[1:]
+            x_min = np.clip(x, 0, 1)
+            x_max = np.clip(x + w, 0, 1)
+            y_min = np.clip(y, 0, 1)
+            y_max = np.clip(y + h, 0, 1)
+            points = np.array([x_min, y_min, x_max, y_max])
             valid_points = points[(points >= 0) & (points <= 1)].reshape(-1, 2)
             if valid_points.size > 1:
-                bbox = torch.tensor([cls, *valid_points.min(axis=0), *valid_points.max(axis=0)])
+                bbox = torch.tensor(
+                    [cls, *valid_points.min(axis=0), *valid_points.max(axis=0)]
+                )
                 bboxes.append(bbox)
 
         if bboxes:
             return torch.stack(bboxes)
         else:
             logger.warning(f"No valid BBox in {label_path}")
+            if self.phase_name == "train":
+                self.invalid_train_labels += 1
+            else:
+                self.invalid_val_labels += 1
+
             return torch.zeros((0, 5))
 
     def get_data(self, idx):
@@ -214,7 +292,9 @@ def collate_fn(batch: List[Tuple[Tensor, Tensor]]) -> Tuple[Tensor, List[Tensor]
     return batch_size, batch_images, batch_targets, batch_reverse, batch_path
 
 
-def create_dataloader(data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: str = "train"):
+def create_dataloader(
+    data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: str = "train"
+):
     if task == "inference":
         return StreamDataLoader(data_cfg)
 
@@ -235,7 +315,9 @@ class StreamDataLoader:
     def __init__(self, data_cfg: DataConfig):
         self.source = data_cfg.source
         self.running = True
-        self.is_stream = isinstance(self.source, int) or str(self.source).lower().startswith("rtmp://")
+        self.is_stream = isinstance(self.source, int) or str(
+            self.source
+        ).lower().startswith("rtmp://")
 
         self.transform = AugmentationComposer([], data_cfg.image_size)
         self.stop_event = Event()
@@ -253,7 +335,9 @@ class StreamDataLoader:
     def load_source(self):
         if self.source.is_dir():  # image folder
             self.load_image_folder(self.source)
-        elif any(self.source.suffix.lower().endswith(ext) for ext in [".mp4", ".avi", ".mkv"]):  # Video file
+        elif any(
+            self.source.suffix.lower().endswith(ext) for ext in [".mp4", ".avi", ".mkv"]
+        ):  # Video file
             self.load_video_file(self.source)
         else:  # Single image
             self.process_image(self.source)

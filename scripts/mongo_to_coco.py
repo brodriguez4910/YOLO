@@ -231,7 +231,7 @@ def create_coco_dataset(
     for image in images:
         coco_image = {
             "id": str(image["_id"]),
-            "file_name": image["filepath"],
+            "file_name": str(image["_id"]) + ".png",
             "width": img_size[
                 1
             ],  # You may want to include width and height if available
@@ -261,7 +261,12 @@ def create_coco_dataset(
                     "id": annotation_id,
                     "image_id": image_id,
                     "category_id": category_id,
-                    "bbox": [box["x"], box["y"], box["w"], box["h"]],
+                    "bbox": [
+                        box["x"] * img_size[1],
+                        box["y"] * img_size[0],
+                        box["w"] * img_size[1],
+                        box["h"] * img_size[0],
+                    ],
                     "area": box["w"] * box["h"],
                     "segmentation": [],
                     "iscrowd": 0,
@@ -280,13 +285,22 @@ def create_coco_dataset(
                             iou = calculate_iou(
                                 polygon,
                                 [
-                                    box["x"] * img_size[1],
-                                    box["y"] * img_size[0],
-                                    (box["x"] + box["w"]) * img_size[1],
-                                    (box["y"] + box["h"]) * img_size[0],
+                                    box["x"],
+                                    box["y"],
+                                    (box["x"] + box["w"]),
+                                    (box["y"] + box["h"]),
                                 ],
                             )
                             ious.append(iou)
+                            # iou = calculate_iou(
+                            #     polygon,
+                            #     [
+                            #         box["x"] * img_size[1],
+                            #         box["y"] * img_size[0],
+                            #         (box["x"] + box["w"]) * img_size[1],
+                            #         (box["y"] + box["h"]) * img_size[0],
+                            #     ],
+                            # )
 
                         # Update the matched segmentation if the IoU is the highest so far
                         if iou > max_iou and iou >= iou_threshold:
@@ -363,13 +377,13 @@ def create_coco_dataset(
         ]
         val_images = [image for image in images if str(image["_id"]) in val_image_ids]
 
-        # save_split_images(train_images, f"{dataset_name}/images/train")
-        # save_split_images(val_images, f"{dataset_name}/images/val")
+        save_split_images(train_images, f"{dataset_name}/images/train")
+        save_split_images(val_images, f"{dataset_name}/images/val")
 
-        # save_split_to_txts(
-        #     train_images, f"{dataset_name}/labels/train", annotations_map
-        # )
-        # save_split_to_txts(val_images, f"{dataset_name}/labels/val", annotations_map)
+        save_split_to_txts(
+            train_images, f"{dataset_name}/labels/train", annotations_map
+        )
+        save_split_to_txts(val_images, f"{dataset_name}/labels/val", annotations_map)
 
         # Filter images for train and validation sets
         train_images = [
@@ -407,12 +421,14 @@ def create_coco_dataset(
             "images": val_images,
             "annotations": val_annotations,
         }
+        annotations_path = f"{dataset_name}/annotations"
+        os.makedirs(annotations_path, exist_ok=True)
 
         # Save the train and validation COCO JSON files
-        with open(f"instances_train_coco.json", "w") as train_file:
+        with open(f"{annotations_path}/instances_train.json", "w") as train_file:
             json.dump(train_coco_dataset, train_file, indent=4)
 
-        with open(f"instances_val_coco.json", "w") as val_file:
+        with open(f"{annotations_path}/instances_val.json", "w") as val_file:
             json.dump(val_coco_dataset, val_file, indent=4)
 
         print("Train and validation COCO datasets created successfully.")
